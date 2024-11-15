@@ -1,0 +1,217 @@
+I'll guide you through the process step by step with detailed explanations.
+
+Step 1: Create the Required Files
+First, let's create all necessary files in your project directory.
+
+```dockerfile
+# Dockerfile
+FROM python:3.9-slim
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    build-essential \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
+WORKDIR /app
+
+# Copy requirements first to leverage Docker cache
+COPY requirements.txt .
+
+# Install Python dependencies
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy application code
+COPY . .
+
+# Expose port
+EXPOSE 8000
+
+# Command to run the application
+CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
+
+```
+
+```text
+
+```yaml
+version: '3.8'
+
+services:
+  api:
+    build: .
+    image: your-dockerhub-username/face-recognition-api:latest  # We'll replace this with your username
+    ports:
+      - "8000:8000"
+    volumes:
+      - .:/app
+    depends_on:
+      - qdrant
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+
+  qdrant:
+    image: qdrant/qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  qdrant_data:
+
+```
+
+Now, let's go through the steps to deploy this to Docker Hub:
+
+1. Create Docker Hub Account:
+```bash
+# Go to https://hub.docker.com/
+# Sign up for a new account
+# Remember your username and password
+```
+
+2. Login to Docker Hub from Terminal:
+```bash
+# Open your terminal
+docker login
+# Enter your Docker Hub username
+# Enter your Docker Hub password
+
+docker build .
+```
+
+3. Update docker-compose.yml:
+```bash
+# Replace 'your-dockerhub-username' in the docker-compose.yml with your actual username
+# For example, if your username is "johndoe", the image line should be:
+# image: johndoe/face-recognition-api:latest
+```
+
+4. Build the Docker Image:
+```bash
+# Make sure you're in the project directory
+docker-compose build
+```
+
+5. Test Locally:
+```bash
+# Run the containers locally to make sure everything works
+docker-compose up -d
+# Check if containers are running
+docker ps
+# Check logs if needed
+docker-compose logs -f
+```
+
+6. Push to Docker Hub:
+```bash
+# Push the image to Docker Hub
+docker push your-dockerhub-username/face-recognition-api:latest
+```
+
+7. Verify on Docker Hub:
+```bash
+# Go to https://hub.docker.com/
+# Login to your account
+# You should see your repository with the face-recognition-api image
+```
+
+To use the image on another machine:
+
+1. Create a new docker-compose.yml on the target machine:
+
+```yaml
+version: '3.8'
+
+services:
+  api:
+    image: your-dockerhub-username/face-recognition-api:latest  # Replace with your username
+    ports:
+      - "8000:8000"
+    depends_on:
+      - qdrant
+    environment:
+      - QDRANT_HOST=qdrant
+      - QDRANT_PORT=6333
+
+  qdrant:
+    image: qdrant/qdrant
+    ports:
+      - "6333:6333"
+      - "6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+
+volumes:
+  qdrant_data:
+
+```
+
+2. Run on the target machine:
+```bash
+# Pull the images
+docker-compose pull
+
+# Start the containers
+docker-compose up -d
+
+# Check if containers are running
+docker ps
+
+# Check logs if needed
+docker-compose logs -f
+```
+
+Common commands for maintenance:
+
+```bash
+# Stop the containers
+docker-compose down
+
+# Remove all containers and volumes
+docker-compose down -v
+
+# View logs
+docker-compose logs -f
+
+# Rebuild and restart after changes
+docker-compose up -d --build
+
+# Update to latest version
+docker-compose pull
+docker-compose up -d
+```
+
+Troubleshooting:
+
+1. If the build fails:
+```bash
+# Check build logs
+docker-compose build --no-cache
+```
+
+2. If containers won't start:
+```bash
+# Check logs
+docker-compose logs -f
+
+# Check container status
+docker ps -a
+```
+
+3. If you can't push to Docker Hub:
+```bash
+# Check login status
+docker login
+
+# Try logging out and back in
+docker logout
+docker login
+```
+
+Would you like me to clarify any of these steps or help with any specific issues you're encountering?
