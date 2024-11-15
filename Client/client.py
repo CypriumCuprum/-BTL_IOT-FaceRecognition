@@ -27,6 +27,7 @@ class FaceRecognitionClient:
         self.api_cooldown = 0.3
         self.last_recognition_result = None
         self.result_lock = Lock()
+        self.threshold = 0.6
 
         # Font settings for OpenCV
         self.font = cv2.FONT_HERSHEY_SIMPLEX
@@ -106,11 +107,12 @@ class FaceRecognitionClient:
                 f"{self.api_url}/faces/recognize",
                 json={
                     "image_base64": base64_image,
-                    "threshold": 0.65,
+                    "threshold": self.threshold,
                     "limit": 1
                 },
                 timeout=5
             )
+            print(f"API Response: {response.status_code} - {response.text}")
 
             if response.status_code == 200:
                 with self.result_lock:
@@ -121,7 +123,7 @@ class FaceRecognitionClient:
         except Exception as e:
             print(f"API call failed: {str(e)}")
 
-    def call_door_api(self, image_data, door_id="Main door"):
+    def call_door_api(self, image_data, user_id, door_id="Main door"):
         """Call the door API with current door status check."""
         with self.door_lock:
             if not self.door_alive:
@@ -136,6 +138,7 @@ class FaceRecognitionClient:
             response = requests.post(
                 f"{self.host_be}/api/camera_door",
                 json={
+                    "user_id": user_id,
                     "door_id": door_id,
                     "image": image_data
                 },
@@ -274,9 +277,9 @@ class FaceRecognitionClient:
             if len(faces) > 0 and (current_time - self.last_api_call) >= self.api_cooldown:
                 self.last_api_call = current_time
                 Thread(target=self.call_recognition_api, args=(frame,)).start()
+                # Draw results on frame
+                self.draw_results(frame, result_face)
 
-            # Draw results on frame
-            self.draw_results(frame, result_face)
             if check_result_face(result_face) and not self.is_calling_apibe:
                 self.is_calling_apibe = True
                 result_face = {}
@@ -285,7 +288,8 @@ class FaceRecognitionClient:
                 base64_image = self.encode_image_base64(frame)
                 # Call door API in separate thread
                 # self.call_door_api(base64_image)
-                Thread(target=self.call_door_api, args=(base64_image,)).start()
+                name_user = self.last_recognition_result['results'][0]['matches'][0]['name']
+                Thread(target=self.call_door_api, args=(base64_image, name_user)).start()
 
             # Draw door status
             self.draw_door_status(frame)

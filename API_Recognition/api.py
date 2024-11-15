@@ -214,10 +214,18 @@ async def get_face(face_id: str):
 
 @app.post("/faces/recognize")
 async def recognize_face(request: FaceRecognizeRequest):
-    """Recognize faces in an uploaded image."""
+    """Recognize faces in an uploaded image, processing only the largest face."""
     try:
         img = decode_base64_image(request.image_base64)
         faces = face_analyzer.get(img)
+
+        # Prepare default response structure
+        response = {
+            "status": "success",
+            "faces_found": len(faces),
+            "faces_recognized": 0,
+            "results": []
+        }
 
         if not faces:
             return JSONResponse(
@@ -227,38 +235,90 @@ async def recognize_face(request: FaceRecognizeRequest):
                 }
             )
 
-        results = []
-        for face in faces:
-            embedding = face.embedding
-            matches = qdrant.search_embedding(embedding, limit=request.limit)
+        # Find the largest face
+        largest_face = max(faces, key=lambda x: (x.bbox[2] - x.bbox[0]) * (x.bbox[3] - x.bbox[1]))
 
-            face_matches = []
-            for match in matches:
-                if match.score >= request.threshold:
-                    face_matches.append({
-                        "face_id": match.id,
-                        "name": match.payload.get("name"),
-                        "common_name": match.payload.get("name_common"),
-                        "confidence": float(match.score)
-                    })
+        # Get matches for the largest face
+        matches = qdrant.search_embedding(largest_face.embedding, limit=request.limit)
 
-            if face_matches:
-                results.append({
-                    "bbox": face.bbox.tolist(),
-                    "matches": face_matches
+        face_matches = []
+        for match in matches:
+            if match.score >= request.threshold:
+                face_matches.append({
+                    "face_id": match.id,
+                    "name": match.payload.get("name"),
+                    "common_name": match.payload.get("name_common"),
+                    "confidence": float(match.score)
                 })
 
-        return JSONResponse(
-            content={
-                "status": "success",
-                "faces_found": len(faces),
-                "faces_recognized": len(results),
-                "results": results
-            }
-        )
+        # If no matching faces found above threshold, return invalid result
+        if not face_matches:
+            face_matches = [{
+                "face_id": "invalid",
+                "name": "invalid",
+                "common_name": "invalid",
+                "confidence": 0.0
+            }]
+
+        response["faces_recognized"] = 1
+        response["results"] = [{
+            "bbox": largest_face.bbox.tolist(),
+            "matches": face_matches
+        }]
+
+        return JSONResponse(content=response)
 
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# @app.post("/faces/recognize")
+# async def recognize_face(request: FaceRecognizeRequest):
+#     """Recognize faces in an uploaded image."""
+#     try:
+#         img = decode_base64_image(request.image_base64)
+#         faces = face_analyzer.get(img)
+#
+#         if not faces:
+#             return JSONResponse(
+#                 content={
+#                     "status": "error",
+#                     "message": "No faces detected in the image"
+#                 }
+#             )
+#
+#         results = []
+#         for face in faces:
+#             embedding = face.embedding
+#             matches = qdrant.search_embedding(embedding, limit=request.limit)
+#
+#             face_matches = []
+#             for match in matches:
+#                 if match.score >= request.threshold:
+#                     face_matches.append({
+#                         "face_id": match.id,
+#                         "name": match.payload.get("name"),
+#                         "common_name": match.payload.get("name_common"),
+#                         "confidence": float(match.score)
+#                     })
+#
+#             if face_matches:
+#                 results.append({
+#                     "bbox": face.bbox.tolist(),
+#                     "matches": face_matches
+#                 })
+#
+#         return JSONResponse(
+#             content={
+#                 "status": "success",
+#                 "faces_found": len(faces),
+#                 "faces_recognized": len(results),
+#                 "results": results
+#             }
+#         )
+#
+#     except Exception as e:
+#         raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":
