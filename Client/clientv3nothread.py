@@ -290,7 +290,8 @@ class FaceRecognitionClient:
 
             # print(self.result_faces)
             # print(self.is_calling_apibe)
-            if check_result_face(self.result_faces) and not self.is_calling_apibe and self.door_status == "LOGCLOSE" and \
+            if check_result_face(
+                    self.result_faces) and not self.is_calling_apibe and self.door_status == "LOGCLOSE" and self.current_recognition is not None and \
                     self.current_recognition["name"] != "invalid":
                 self.result_faces = {}
                 print('Opening door...')
