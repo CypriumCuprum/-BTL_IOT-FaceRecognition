@@ -112,7 +112,6 @@ class FaceRecognitionClient:
                 },
                 timeout=5
             )
-            print(f"API Response: {response.status_code} - {response.text}")
 
             if response.status_code == 200:
                 with self.result_lock:
@@ -274,13 +273,14 @@ class FaceRecognitionClient:
 
             # Call API if faces detected and enough time has passed
             current_time = time.time()
-            if len(faces) > 0 and (current_time - self.last_api_call) >= self.api_cooldown:
+            if len(faces) > 0 and (
+                    current_time - self.last_api_call) >= self.api_cooldown and self.door_status == "LOGCLOSE":
                 self.last_api_call = current_time
-                Thread(target=self.call_recognition_api, args=(frame,)).start()
+                self.call_recognition_api(frame)
                 # Draw results on frame
                 self.draw_results(frame, result_face)
 
-            if check_result_face(result_face) and not self.is_calling_apibe:
+            if check_result_face(result_face):
                 self.is_calling_apibe = True
                 result_face = {}
                 print('Opening door...')
@@ -289,7 +289,7 @@ class FaceRecognitionClient:
                 # Call door API in separate thread
                 # self.call_door_api(base64_image)
                 name_user = self.last_recognition_result['results'][0]['matches'][0]['name']
-                Thread(target=self.call_door_api, args=(base64_image, name_user)).start()
+                self.call_door_api(base64_image, name_user)
 
             # Draw door status
             self.draw_door_status(frame)

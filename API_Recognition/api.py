@@ -9,8 +9,17 @@ from typing import Optional, List
 from pydantic import BaseModel, Field
 import uuid
 import base64
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="Face Recognition API")
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Initialize FaceAnalysis
 face_analyzer = FaceAnalysis(name="buffalo_s")

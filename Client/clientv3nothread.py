@@ -2,7 +2,6 @@ import cv2
 import requests
 import base64
 import time
-from threading import Thread, Lock
 import socketio
 
 HOST_BE = "http://localhost:5000"
@@ -15,6 +14,12 @@ def check_result_face(result_face):
     return False
 
 
+def get_largrest_face(faces):
+    if len(faces) == 0:
+        return None
+    return max(faces, key=lambda x: (x[2] - x[0]) * (x[3] - x[1]))
+
+
 class FaceRecognitionClient:
     def __init__(self, aiapi_url="http://localhost:8000", host_be=HOST_BE):
         self.api_url = aiapi_url
@@ -24,18 +29,21 @@ class FaceRecognitionClient:
 
         # Initialize variables for API results
         self.last_api_call = 0
-        self.api_cooldown = 0.3
+        self.api_cooldown = 2
         self.last_recognition_result = None
-        self.result_lock = Lock()
         self.threshold = 0.6
+
+        # Store last recognition name for real-time display
+        self.current_recognition = None
+        self.recognition_timeout = 3  # seconds to keep showing the name
+        self.last_recognition_time = 0
 
         # Font settings for OpenCV
         self.font = cv2.FONT_HERSHEY_SIMPLEX
         self.font_scale = 0.6
         self.font_thickness = 2
 
-        # Door status with thread safety
-        self.door_lock = Lock()
+        # Door status
         self.door_alive = False
         self.door_status = "CLOSE"
 
@@ -44,6 +52,8 @@ class FaceRecognitionClient:
         self.setup_socketio()
         self.connect_socketio()
         self.is_calling_apibe = False
+
+        self.resutl_faces = {}
 
     def setup_socketio(self):
         """Setup Socket.IO event handlers"""
@@ -55,54 +65,44 @@ class FaceRecognitionClient:
         @self.sio.on('disconnect')
         def on_disconnect():
             print("Disconnected from Socket.IO server")
-            # Attempt to reconnect after a delay
             time.sleep(5)
             self.connect_socketio()
             print("Reconnecting to Socket.IO server...")
 
         @self.sio.on('door')
         def on_door(data):
-            """Handle door status updates"""
             try:
                 device_id, status = data.split(";")
-                with self.door_lock:
-                    self.door_status = status
+                self.door_status = status
                 print(f"Door status updated: {status}")
             except Exception as e:
                 print(f"Error handling door status: {str(e)}")
 
         @self.sio.on('dooralive')
         def on_door_alive(data):
-            """Handle door alive status updates"""
             try:
                 is_alive = data == "True"
-                with self.door_lock:
-                    self.door_alive = is_alive
+                self.door_alive = is_alive
                 print(f"Door alive status updated: {is_alive}")
             except Exception as e:
                 print(f"Error handling door alive status: {str(e)}")
 
     def connect_socketio(self):
-        """Establish Socket.IO connection"""
         try:
             if not self.sio.connected:
                 self.sio.connect(self.host_be)
         except Exception as e:
             print(f"Failed to connect to Socket.IO server: {str(e)}")
-            # Retry connection after delay
             time.sleep(5)
             self.connect_socketio()
 
     def encode_image_base64(self, image):
-        """Convert image to base64 string."""
         _, buffer = cv2.imencode('.jpg', image)
         return base64.b64encode(buffer).decode('utf-8')
 
     def call_recognition_api(self, image):
-        """Call the face recognition API."""
         try:
             base64_image = self.encode_image_base64(image)
-
             response = requests.post(
                 f"{self.api_url}/faces/recognize",
                 json={
@@ -112,11 +112,22 @@ class FaceRecognitionClient:
                 },
                 timeout=5
             )
-            print(f"API Response: {response.status_code} - {response.text}")
 
             if response.status_code == 200:
-                with self.result_lock:
-                    self.last_recognition_result = response.json()
+                self.last_recognition_result = response.json()
+                # Update current recognition if we have a match
+                if (self.last_recognition_result.get("status") == "success" and
+                        self.last_recognition_result.get("results")):
+                    result = self.last_recognition_result["results"][0]
+                    if result.get("matches"):
+                        match = result["matches"][0]
+                        self.current_recognition = {
+                            "name": match.get("name", "Unknown"),
+                            "common_name": match.get("common_name", ""),
+                            "confidence": match.get("confidence", 0),
+                            "face_id": match.get("face_id", "")
+                        }
+                        self.last_recognition_time = time.time()
             else:
                 print(f"API Error: {response.status_code} - {response.text}")
 
@@ -124,17 +135,16 @@ class FaceRecognitionClient:
             print(f"API call failed: {str(e)}")
 
     def call_door_api(self, image_data, user_id, door_id="Main door"):
-        """Call the door API with current door status check."""
-        with self.door_lock:
-            if not self.door_alive:
-                print("Door is not alive, cannot open")
-                return
+        if not self.door_alive:
+            print("Door is not alive, cannot open")
+            return
 
-            if self.door_status != "LOGCLOSE":
-                print("Door is not closed, cannot open")
-                return
+        if self.door_status != "LOGCLOSE":
+            print("Door is not closed, cannot open")
+            return
 
         try:
+            self.is_calling_apibe = True
             response = requests.post(
                 f"{self.host_be}/api/camera_door",
                 json={
@@ -150,23 +160,15 @@ class FaceRecognitionClient:
                 print(f"Failed to open door: {response.status_code} - {response.text}")
         except Exception as e:
             print(f"Door API call failed: {str(e)}")
-        self.is_calling_apibe = False
+        finally:
+            self.is_calling_apibe = False
 
     def draw_door_status(self, frame):
-        """Draw door status information on the frame."""
-        with self.door_lock:
-            alive = self.door_alive
-            status = self.door_status
-
-        # Status text
-        status_text = f"Door: {'Online' if alive else 'Offline'} | Status: {status}"
-
-        # Get text size
+        status_text = f"Door: {'Online' if self.door_alive else 'Offline'} | Status: {self.door_status}"
         (text_width, text_height), _ = cv2.getTextSize(
             status_text, self.font, self.font_scale, self.font_thickness
         )
 
-        # Draw background rectangle
         cv2.rectangle(
             frame,
             (10, 10),
@@ -175,85 +177,90 @@ class FaceRecognitionClient:
             -1
         )
 
-        # Draw status text
         cv2.putText(
             frame,
             status_text,
             (20, 30),
             self.font,
             self.font_scale,
-            (0, 255, 0) if alive else (0, 0, 255),
+            (0, 255, 0) if self.door_alive else (0, 0, 255),
             self.font_thickness
         )
 
-    def draw_results(self, frame, result_faces):
-        """Draw recognition results on the frame."""
-        with self.result_lock:
-            recognition_result = self.last_recognition_result
+    def draw_results(self, frame, faces):
+        current_time = time.time()
 
-        if recognition_result and recognition_result.get("status") == "success":
-            results = recognition_result.get("results", [])
+        # Check if we should clear the current recognition
+        if current_time - self.last_recognition_time > self.recognition_timeout:
+            self.resutl_faces = {}
+            self.current_recognition = None
 
-            for result in results:
-                bbox = result.get("bbox")
-                matches = result.get("matches", [])
+        largest_face = get_largrest_face(faces)
+        # Draw each detected face
+        if largest_face is not None:
+            x, y, w, h = largest_face
+            #     cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
+            # for (x, y, w, h) in faces:
+            # Draw rectangle for face
+            cv2.rectangle(frame, (x, y), (x + w, y + h), (0, 255, 0), 2)
 
-                if bbox and matches:
-                    x1, y1, x2, y2 = map(int, bbox)
-                    cv2.rectangle(frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+            # If we have a current recognition, draw the name
+            if self.current_recognition:
+                name = self.current_recognition["name"]
+                common_name = self.current_recognition["common_name"]
+                confidence = self.current_recognition["confidence"]
+                face_id = self.current_recognition["face_id"]
 
-                    best_match = matches[0]
-                    face_id = best_match.get("face_id", "")
-                    name = best_match.get("name", "Unknown")
-                    confidence = best_match.get("confidence", 0)
-                    common_name = best_match.get("common_name", "")
-
-                    if common_name in result_faces:
-                        result_faces[common_name].append(face_id)
-                        result_faces[common_name] = list(set(result_faces[common_name]))
+                # Update result_faces for door control
+                if common_name:
+                    if common_name in self.result_faces:
+                        self.result_faces[common_name].append(face_id)
+                        self.result_faces[common_name] = list(set(self.result_faces[common_name]))
                     else:
-                        result_faces[common_name] = [face_id]
+                        self.result_faces[common_name] = [face_id]
 
-                    text = f"{name} ({common_name})"
-                    conf_text = f"Conf: {confidence:.2f}"
+                # Draw name label
+                text = f"{name} ({common_name})"
+                conf_text = f"Conf: {confidence:.2f}"
 
-                    (text_width, text_height), _ = cv2.getTextSize(
-                        text, self.font, self.font_scale, self.font_thickness
-                    )
+                (text_width, text_height), _ = cv2.getTextSize(
+                    text, self.font, self.font_scale, self.font_thickness
+                )
 
-                    cv2.rectangle(
-                        frame,
-                        (x1, y1 - text_height - 10),
-                        (x1 + text_width + 10, y1),
-                        (0, 255, 0),
-                        -1
-                    )
+                # Background rectangle for name
+                cv2.rectangle(
+                    frame,
+                    (x, y - text_height - 10),
+                    (x + text_width + 10, y),
+                    (0, 255, 0),
+                    -1
+                )
 
-                    cv2.putText(
-                        frame,
-                        text,
-                        (x1 + 5, y1 - 5),
-                        self.font,
-                        self.font_scale,
-                        (0, 0, 0),
-                        self.font_thickness
-                    )
+                # Draw name and confidence
+                cv2.putText(
+                    frame,
+                    text,
+                    (x + 5, y - 5),
+                    self.font,
+                    self.font_scale,
+                    (0, 0, 0),
+                    self.font_thickness
+                )
 
-                    cv2.putText(
-                        frame,
-                        conf_text,
-                        (x1, y2 + 20),
-                        self.font,
-                        self.font_scale,
-                        (0, 255, 0),
-                        self.font_thickness
-                    )
+                cv2.putText(
+                    frame,
+                    conf_text,
+                    (x, y + h + 20),
+                    self.font,
+                    self.font_scale,
+                    (0, 255, 0),
+                    self.font_thickness
+                )
 
     def run(self):
-        """Main loop for capturing and processing video."""
         print("Starting face recognition client...")
         print("Press 'q' to quit")
-        result_face = {}
+        self.result_faces = {}
 
         while True:
             ret, frame = self.cap.read()
@@ -264,7 +271,7 @@ class FaceRecognitionClient:
             # Convert frame to grayscale for face detection
             gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
 
-            # Detect faces
+            # Detect faces using OpenCV
             faces = self.face_cascade.detectMultiScale(
                 gray,
                 scaleFactor=1.1,
@@ -276,20 +283,20 @@ class FaceRecognitionClient:
             current_time = time.time()
             if len(faces) > 0 and (current_time - self.last_api_call) >= self.api_cooldown:
                 self.last_api_call = current_time
-                Thread(target=self.call_recognition_api, args=(frame,)).start()
-                # Draw results on frame
-                self.draw_results(frame, result_face)
+                self.call_recognition_api(frame)
 
-            if check_result_face(result_face) and not self.is_calling_apibe:
-                self.is_calling_apibe = True
-                result_face = {}
+            # Draw results using OpenCV's face detection
+            self.draw_results(frame, faces)
+
+            # print(self.result_faces)
+            # print(self.is_calling_apibe)
+            if check_result_face(self.result_faces) and not self.is_calling_apibe and self.door_status == "LOGCLOSE" and \
+                    self.current_recognition["name"] != "invalid":
+                self.result_faces = {}
                 print('Opening door...')
-                # Convert current frame to base64 for door API
                 base64_image = self.encode_image_base64(frame)
-                # Call door API in separate thread
-                # self.call_door_api(base64_image)
-                name_user = self.last_recognition_result['results'][0]['matches'][0]['name']
-                Thread(target=self.call_door_api, args=(base64_image, name_user)).start()
+                if self.current_recognition:
+                    self.call_door_api(base64_image, self.current_recognition["name"])
 
             # Draw door status
             self.draw_door_status(frame)
